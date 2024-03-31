@@ -20,8 +20,7 @@ void uLog::init_case_val() {
     case_val[10] = typeid(std::string("")).hash_code();
 } */
 
-void uLog::set_client(const uLog_t ulog_level, const std::string& ip, const int port,
-                      const int largest_pkt_size) {
+void uLog::set_client(const uLog_t ulog_level, const std::string& ip, const int port) {
     // create UDP tunnel
     if ((udpTunnel.sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         perror("uLog socket creation failed");
@@ -33,7 +32,6 @@ void uLog::set_client(const uLog_t ulog_level, const std::string& ip, const int 
     udpTunnel.addr.sin_addr.s_addr = inet_addr(ip.data());
     udpTunnel.addr.sin_port = htons(port);
 
-    largest_udp_pkt_size = largest_pkt_size;
     udpTunnel.buf = (char*)malloc(largest_udp_pkt_size +
                                   num_additional_entries);  // add additional space for safe
 
@@ -41,7 +39,7 @@ void uLog::set_client(const uLog_t ulog_level, const std::string& ip, const int 
     udpTunnel.num_used_entries = 0;
 }
 
-void uLog::set_server(bool* exit_flag_in, const int port, const int largest_pkt_size) {
+void uLog::set_server(bool* exit_flag_in, const int port) {
     // create UDP tunnel
     if ((udpTunnel.sockFd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         perror("uLog socket creation failed");
@@ -96,6 +94,11 @@ int uLog::log(uLog_t level, std::string module, std::string fname, uint32_t line
         memcpy(buf, &level, sizeof(level));
         udpTunnel.num_used_entries += 2 + sizeof(level);
         msg_size += 2 + sizeof(level);
+
+        buf = udpTunnel.buf + udpTunnel.num_used_entries;
+        memcpy(buf, &ver, sizeof(ver));
+        udpTunnel.num_used_entries += sizeof(ver);
+        msg_size += sizeof(ver);
 
         buf = udpTunnel.buf + udpTunnel.num_used_entries;
         memcpy(buf, &ts, sizeof(ts));
@@ -220,7 +223,7 @@ int uLog::log(uLog_t level, std::string module, std::string fname, uint32_t line
     va_end(args);
     memcpy(p_msg_size, &msg_size, sizeof(uint16_t));
 
-    if ((udpTunnel.num_used_entries >= largest_udp_pkt_size) || (level >= uLogError)) {
+    if ((udpTunnel.num_used_entries >= largest_udp_pkt_size) || (level >= uLogWarning)) {
         sendto(udpTunnel.sockFd, (const char*)udpTunnel.buf, udpTunnel.num_used_entries, 0,
                (const struct sockaddr*)&udpTunnel.addr, sizeof(udpTunnel.addr));
         udpTunnel.num_used_entries = 0;
@@ -312,15 +315,101 @@ int uLog::sync() {
     return ret;
 }
 
+void gen_filename(std::string& fname) {
+    int idx;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    char* utc = asctime(gmtime(&ts.tv_sec));
+
+    // get month
+    static char month_list[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    static char month_digital_list[12][3] = {"01", "02", "03", "04", "05", "06",
+                                             "07", "08", "09", "10", "11", "12"};
+    std::string month(month_list[0]);
+    month[0] = utc[4];
+    month[1] = utc[5];
+    month[2] = utc[6];
+    for (idx = 0; idx < 12; idx++) {
+        if (month == std::string(month_list[idx])) {
+            month = month_digital_list[idx];
+            break;
+        }
+    }
+
+    fname = fname + utc[20] + utc[21] + utc[22] + utc[23];  // add year
+    utc[8] = (utc[8] == 32) ? 48 : utc[8];
+    fname = fname + '_' + month + '_' + utc[8] + utc[9];  //  add month and day
+    utc[11] = (utc[11] == 32) ? 48 : utc[11];
+    utc[14] = (utc[14] == 32) ? 48 : utc[14];
+    utc[17] = (utc[17] == 32) ? 48 : utc[17];
+    fname = fname + '_' + utc[11] + utc[12] + '_' + utc[14] + utc[15] + '_' + utc[17] + utc[18] +
+            ".bin";
+}
+
+void uLog::run_dump_server(char* filename) {
+    FILE* fp;
+    if (filename == NULL) {
+        std::string fname("ulog_dump_");
+        gen_filename(fname);
+
+        printf("Raw log message is dumped into file %s\n", fname.data());
+
+        fp = fopen(fname.data(), "wb");
+    } else {
+        fp = fopen(filename, "wb");
+    }
+
+    struct sockaddr_in sockaddr;
+    int len = sizeof(sockaddr);
+
+    while (!(*exit_flag)) {
+        udpTunnel.num_used_entries =
+            recvfrom(udpTunnel.sockFd, udpTunnel.buf, largest_udp_pkt_size + num_additional_entries,
+                     0, (struct sockaddr*)&udpTunnel.addr, (socklen_t*)(&len));
+
+        fwrite(udpTunnel.buf, 1, udpTunnel.num_used_entries, fp);
+    }
+
+    if (fp != NULL) {
+        fclose(fp);
+    }
+}
+
 void uLog::run_server(char* fname) {
     FILE* fp;
+    FILE* fp_dump;
+    std::string filename;
     if (fname == NULL) {
+        std::string filename("ulog_dump_");
+        gen_filename(filename);
+        fp_dump = fopen(filename.data(), "wb");
         fp = stdout;
+        fprintf(stderr,
+                "log message prints on screen.\n"
+                "Raw log message is dumped into file %s.\n",
+                filename.data());
     } else {
-        fp = fopen(fname, "a");
+        fp = fopen(fname, "w");
         if (fp == NULL) {
+            filename = "ulog_dump_";
+            gen_filename(filename);
+            fp_dump = fopen(filename.data(), "wb");
             fp = stdout;
-            fprintf(stderr, "uLog server open file %s fails.\n", fname);
+            fprintf(stderr,
+                    "uLog server open file %s fails.\nlog message prints on screen.\n"
+                    "Raw log message is dumped into file %s.\n",
+                    fname, filename.data());
+        } else {
+            filename = fname;
+            filename = filename.erase(filename.rfind('.'));
+            filename = filename + ".bin";
+            fp_dump = fopen(filename.data(), "wb");
+
+            fprintf(stdout,
+                    "log message prints to file %s.\n"
+                    "Raw log message is dumped into file %s.\n",
+                    fname, filename.data());
         }
     }
 
@@ -332,10 +421,12 @@ void uLog::run_server(char* fname) {
             recvfrom(udpTunnel.sockFd, udpTunnel.buf, largest_udp_pkt_size + num_additional_entries,
                      0, (struct sockaddr*)&udpTunnel.addr, (socklen_t*)(&len));
 
+        fwrite(udpTunnel.buf, 1, udpTunnel.num_used_entries, fp_dump);
+
         run_server_kernel(fp);
 
         // output to file immediately after a UDP packet is parsed.
-        if (fp != NULL) {
+        if (fname != NULL) {
             fclose(fp);
             fp = fopen(fname, "a");
             if (fp == NULL) {
@@ -348,17 +439,17 @@ void uLog::run_server(char* fname) {
     if (fp != NULL) {
         fclose(fp);
     }
+
+    fclose(fp_dump);
 }
 
 void uLog::run_server_kernel(FILE* fp) {
     int16_t one_msg_size;
     int udp_pkt_size = udpTunnel.num_used_entries;
     char* buf = udpTunnel.buf;
-    memcpy(&one_msg_size, buf, sizeof(int16_t));  // next message size
-    while ((udp_pkt_size > 0) && (one_msg_size > 0)) {
+    while (udp_pkt_size > 0) {
         one_msg_size = decode_one_msg(buf, fp);
         buf += one_msg_size;
-        memcpy(&one_msg_size, buf, sizeof(int16_t));  // next message size
         udp_pkt_size -= one_msg_size;
     }
 }
@@ -376,6 +467,16 @@ int uLog::decode_one_msg(char* buf, FILE* fp) {
     uLog_t level;
     memcpy(&level, buf, sizeof(level));
     buf += sizeof(level);
+
+    uint8_t version;
+    memcpy(&version, buf, sizeof(version));
+    buf += sizeof(version);
+
+    if (ver != version) {
+        fprintf(stderr, "uLog server receives an unknown version log. ver=%d version=%d\n", ver,
+                version);
+        exit(-1);
+    }
 
     struct timespec ts;
     memcpy(&ts, buf, sizeof(timespec));
@@ -476,12 +577,12 @@ int uLog::decode_one_msg(char* buf, FILE* fp) {
             case uLogFloat:
                 float f;
                 num_cpy<float>(&f, &buf);
-                fprintf(fp, " %g", f);
+                fprintf(fp, " %.16g", f);
                 break;
             case uLogDouble:
                 double d;
                 num_cpy<double>(&d, &buf);
-                fprintf(fp, " %g", d);
+                fprintf(fp, " %.16g", d);
                 break;
             case uLogString:
                 delog_string(&buf, fp);

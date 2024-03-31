@@ -62,11 +62,14 @@ typedef enum _uLog_t : uint8_t { uLogDebug, uLogInfo, uLogWarning, uLogError } u
 
 class uLog {
    public:
-    uLog(const int largest_pkt_size = 1024) { largest_udp_pkt_size = largest_pkt_size; };
+    uLog(const int version = 1, const int largest_pkt_size = 1024) {
+        ver = version;
+        largest_udp_pkt_size = largest_pkt_size;
+    };
     void set_client(const uLog_t ulog_level = uLogWarning, const std::string& ip = "127.0.0.1",
-                    const int port = 5400, const int largest_pkt_size = 1024);
+                    const int port = 5400);
 
-    void set_server(bool* exit_flag, const int port = 5400, const int largest_pkt_size = 1024);
+    void set_server(bool* exit_flag, const int port = 5400);
 
     ~uLog(){};
 
@@ -100,6 +103,17 @@ class uLog {
      */
     void run_server(char* filename = NULL);
 
+    /**
+     * wait UDP packet and save it into a binary file
+     * @param filename path and file name to store raw log information
+    */
+    void run_dump_server(char* filename = NULL);
+
+    /**
+     * decode one received raw message and write human readible text into file
+    */
+    int decode_one_msg(char* buf, FILE* fp);
+
    private:
     /**
      * @brief uLog message data type
@@ -119,6 +133,8 @@ class uLog {
         uLogString,
         uLogCharPtr
     } uLog_Msg_t;
+
+    uint8_t ver;
 
     const uint8_t max_string_len = 64;
 
@@ -146,7 +162,6 @@ class uLog {
     */
     bool* exit_flag;
     void run_server_kernel(FILE* fp);
-    int decode_one_msg(char* buf, FILE* fp);
     template <typename T>
     void num_cpy(T* t, char** buf);
     void delog_string(char** buf, FILE* fp);
