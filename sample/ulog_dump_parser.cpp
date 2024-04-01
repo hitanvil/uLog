@@ -24,7 +24,7 @@ int main(int argc, char* argv[]) {
     std::string bin_name(argv[1]);
     std::string txt_name;
     txt_name = bin_name.erase(bin_name.rfind('.'));
-    txt_name = txt_name + ".txt";
+    txt_name = txt_name + ".log";
     fp_log = fopen(txt_name.data(), "w");
 
     int16_t msg_size;

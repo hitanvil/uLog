@@ -363,12 +363,28 @@ void uLog::run_dump_server(char* filename) {
     struct sockaddr_in sockaddr;
     int len = sizeof(sockaddr);
 
+    int32_t filesize = 0;
+
     while (!(*exit_flag)) {
         udpTunnel.num_used_entries =
             recvfrom(udpTunnel.sockFd, udpTunnel.buf, largest_udp_pkt_size + num_additional_entries,
                      0, (struct sockaddr*)&udpTunnel.addr, (socklen_t*)(&len));
 
         fwrite(udpTunnel.buf, 1, udpTunnel.num_used_entries, fp);
+
+        filesize += udpTunnel.num_used_entries;
+        if (filesize >= (1024 * 1024 * 100)) {  // dump file maximum size is 100MB.
+            filesize = 0;
+            fclose(fp);
+            if (filename == NULL) {
+                std::string fname("ulog_dump_");
+                gen_filename(fname);
+
+                fp = fopen(fname.data(), "wb");
+            } else {
+                fp = fopen(filename, "wb");
+            }
+        }
     }
 
     if (fp != NULL) {
